@@ -1,6 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
-Description: 'Root CloudFormation template that invokes a nested S3 bucket stack'
+Description: |
+  Root CloudFormation template for Cloud Dictionary Application. Creates:
+  - DynamoDB Receipts table with event streams and point-in-time recovery
+
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -10,38 +13,35 @@ Metadata:
         Parameters:
           - NestedStacksS3BucketName
       - Label:
-          default: "Common Bucket Configuration"
-        Parameters:
-          - ProjectName
-          - Environment
-      - Label:
-          default: "Bucket Configuration"
-        Parameters:
-          - BucketBaseName
-      - Label:
-          default: "Encryption Configuration"
+          default: "KMS Encryption"
         Parameters:
           - KmsKey
-          - EnableBucketKey
+          - KmsKeyArn
       - Label:
           default: "Advanced Configuration"
         Parameters:
           - CiSuffix
+      - Label:
+          default: "Lambda Function Base Names"
+        Parameters:
+          - ListOrdersFunctionBaseName
+          - GetOrderFunctionBaseName
+          - GetProductFunctionBaseName
+          - SearchProductsFunctionBaseName
+          - SubmitRequestFunctionBaseName
     ParameterLabels:
       NestedStacksS3BucketName:
         default: "S3 Bucket Name"
+      KmsKey:
+        default: "KMS Key Alias"
+      KmsKeyArn:
+        default: "KMS Key ARN"
       ProjectName:
         default: "Project Name"
-      BucketBaseName:
-        default: "Bucket Base Name"
       Environment:
         default: "Environment"
       CiSuffix:
         default: "CI Suffix"
-      KmsKey:
-        default: "KMS Key (ARN / Alias)"
-      EnableBucketKey:
-        default: "Enable S3 Bucket Key"
 
 Parameters:
   NestedStacksS3BucketName:
@@ -55,36 +55,26 @@ Parameters:
 
   ProjectName:
     Type: String
-    Default: "ztc-etl"
+    Default: "elara"
     Description: "Project name to use as a bucket prefix"
     MinLength: 1
     MaxLength: 20
     AllowedPattern: "^[a-z0-9-]+$"
     ConstraintDescription: "Project name must be lowercase letters, numbers, and hyphens only"
 
-  BucketBaseName:
-    Type: String
-    Default: "csv-raw-data"
-    MinLength: 1
-    MaxLength: 20
-    AllowedPattern: "^[a-z0-9.-]+$"
-    ConstraintDescription: "Bucket base name must be 1-20 characters and can only contain lowercase letters, numbers, hyphens, and dots"
-    Description: Base name for the S3 bucket (account ID, environment, and region will be appended)
-
   KmsKey:
     Type: String
-    Default: ""
+    Default: "SB-KMS"
     AllowedPattern: "^(alias/[a-zA-Z0-9_-]+|arn:aws:kms:[a-z0-9-]+:[0-9]+:key/[a-zA-Z0-9-]+|[a-zA-Z0-9_-]+)?$"
     ConstraintDescription: "KMS Key can be a key name (e.g., my-key, auto-converted to alias/my-key), a KMS key alias (e.g., alias/my-key), or a full KMS key ARN (e.g., arn:aws:kms:region:account:key/key-id), or leave empty for no KMS encryption"
     Description: "Optional KMS Key for S3 bucket encryption. Accepts: key name (my-key), alias (alias/my-key), or ARN (arn:aws:kms:region:account:key/key-id). Plain key names are auto-converted to aliases."
 
-  EnableBucketKey:
+  KmsKeyArn:
     Type: String
-    Default: "false"
-    AllowedValues:
-      - "true"
-      - "false"
-    Description: "Enable S3 Bucket Key for KMS encryption cost optimization (only applicable when KmsKey is provided)"
+    Default: "arn:aws:kms:us-east-1:269235677084:key/e691f177-0403-4b15-b9a7-50b57b204140"
+    AllowedPattern: "^(arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[a-zA-Z0-9-]+)?$"
+    ConstraintDescription: "KMS Key ARN must be a full key ARN (arn:aws:kms:region:account:key/key-id) or empty for no KMS encryption"
+    Description: "KMS key ARN used to encrypt CloudWatch Log Groups and granted to the Lambda IAM roles. Must be a full key ARN; aliases are not accepted by CloudWatch Logs."
 
   Environment:
     Type: String
@@ -96,42 +86,463 @@ Parameters:
     Default: ""
     Description: "Optional CI suffix to append to the bucket name"
 
+  ListOrdersFunctionBaseName:
+    Type: String
+    Default: "list-orders"
+    Description: "Base name of the list-orders Lambda function (without the Shop Smart prefix)"
+    MinLength: 1
+    MaxLength: 40
+    AllowedPattern: "^[a-z0-9-]+$"
+    ConstraintDescription: "Function base name must be lowercase letters, numbers, and hyphens only"
+
+  GetOrderFunctionBaseName:
+    Type: String
+    Default: "get-order"
+    Description: "Base name of the get-order Lambda function (without the Shop Smart prefix)"
+    MinLength: 1
+    MaxLength: 40
+    AllowedPattern: "^[a-z0-9-]+$"
+    ConstraintDescription: "Function base name must be lowercase letters, numbers, and hyphens only"
+
+  GetProductFunctionBaseName:
+    Type: String
+    Default: "get-product"
+    Description: "Base name of the get-product Lambda function (without the Shop Smart prefix)"
+    MinLength: 1
+    MaxLength: 40
+    AllowedPattern: "^[a-z0-9-]+$"
+    ConstraintDescription: "Function base name must be lowercase letters, numbers, and hyphens only"
+
+  SearchProductsFunctionBaseName:
+    Type: String
+    Default: "search-products"
+    Description: "Base name of the search-products Lambda function (without the Shop Smart prefix)"
+    MinLength: 1
+    MaxLength: 40
+    AllowedPattern: "^[a-z0-9-]+$"
+    ConstraintDescription: "Function base name must be lowercase letters, numbers, and hyphens only"
+
+  SubmitRequestFunctionBaseName:
+    Type: String
+    Default: "submit-request"
+    Description: "Base name of the submit-request Lambda function (without the Shop Smart prefix)"
+    MinLength: 1
+    MaxLength: 40
+    AllowedPattern: "^[a-z0-9-]+$"
+    ConstraintDescription: "Function base name must be lowercase letters, numbers, and hyphens only"
+
+Conditions:
+  HasKmsKey: !Not [!Equals [!Ref KmsKey, ""]]
+  HasKmsKeyArn: !Not [!Equals [!Ref KmsKeyArn, ""]]
+  HasCiSuffix: !Not [!Equals [!Ref CiSuffix, ""]]
+
 Resources:
-  S3BucketNestedStack:
+
+  OrdersDynamoDBTable:
     Type: AWS::CloudFormation::Stack
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Metadata:
       com.aws.cloudformation.Context:
-        why: "Invokes the nested S3 bucket CloudFormation template to create a versioned, encrypted S3 bucket with public access blocking and optional logging/website configuration"
+        why: "Invokes the nested DynamoDB CloudFormation template to create the orders table (partition key orderId, String) with on-demand billing, KMS encryption, point-in-time recovery, and a customerId global secondary index"
         must:
           - "Nested template must be accessible at the specified S3 location"
           - "IAM principal must have s3:GetObject permission on the template S3 bucket"
-          - "CloudFormation service must have permission to assume the required IAM role for S3 and KMS operations"
+          - "CloudFormation service must have permission to create DynamoDB tables and global secondary indexes, and to use the specified KMS key"
     Properties:
-      TemplateURL: !Sub https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-s3-bucket/template.yaml
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-dynamodb-table/template.yaml"
       Parameters:
         ProjectName: !Ref ProjectName
-        BucketBaseName: !Ref BucketBaseName
-        KmsKey: !Ref KmsKey
-        EnableBucketKey: !Ref EnableBucketKey
+        TableBaseName: "orders"
+        Environment: !Ref Environment
+        BillingMode: "PAY_PER_REQUEST"
+        PartitionKeyName: "orderId"
+        PartitionKeyType: "S"
+        EnablePointInTimeRecovery: "true"
+        GSI1Enabled: "true"
+        GSI1PartitionKeyName: "customerId"
+        GSI1PartitionKeyType: "S"
+        KmsKey: !If [HasKmsKey, !Ref KmsKey, ""]
+        CiSuffix: !Ref CiSuffix
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: OrdersDatabase
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 10
+
+  ProductsDynamoDBTable:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested DynamoDB CloudFormation template to create the products table (partition key productId, String) with on-demand billing, KMS encryption, and point-in-time recovery"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create DynamoDB tables and to use the specified KMS key"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-dynamodb-table/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        TableBaseName: "products"
+        Environment: !Ref Environment
+        BillingMode: "PAY_PER_REQUEST"
+        PartitionKeyName: "productId"
+        PartitionKeyType: "S"
+        EnablePointInTimeRecovery: "true"
+        KmsKey: !If [HasKmsKey, !Ref KmsKey, ""]
+        CiSuffix: !Ref CiSuffix
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: ProductsDatabase
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 10
+
+  ListOrdersLambdaCWLogGroup:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested CloudWatch Logs CloudFormation template to create the /aws/lambda/<project>-list-orders-<env>-<region> log group with 14-day retention and optional KMS encryption"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create CloudWatch Logs log groups"
+          - "If KmsKeyArn is set, the key policy must allow the CloudWatch Logs service principal to use it"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-cloudwatch-log-group/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        CustomLogGroupName: !If
+          - HasCiSuffix
+          - !Sub "/aws/lambda/${ProjectName}-${ListOrdersFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+          - !Sub "/aws/lambda/${ProjectName}-${ListOrdersFunctionBaseName}-${Environment}-${AWS::Region}"
+        RetentionInDays: 14
+        KmsKeyIdOrAlias: !If [HasKmsKeyArn, !Ref KmsKeyArn, ""]
         Environment: !Ref Environment
         CiSuffix: !Ref CiSuffix
       Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: ListOrdersLogGroup
         - Key: ManagedBy
           Value: RootStack
-        - Key: NestedStackPurpose
-          Value: S3BucketCreation
+      TimeoutInMinutes: 5
+
+  GetOrderLambdaCWLogGroup:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested CloudWatch Logs CloudFormation template to create the /aws/lambda/<project>-get-order-<env>-<region> log group with 14-day retention and optional KMS encryption"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create CloudWatch Logs log groups"
+          - "If KmsKeyArn is set, the key policy must allow the CloudWatch Logs service principal to use it"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-cloudwatch-log-group/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        CustomLogGroupName: !If
+          - HasCiSuffix
+          - !Sub "/aws/lambda/${ProjectName}-${GetOrderFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+          - !Sub "/aws/lambda/${ProjectName}-${GetOrderFunctionBaseName}-${Environment}-${AWS::Region}"
+        RetentionInDays: 14
+        KmsKeyIdOrAlias: !If [HasKmsKeyArn, !Ref KmsKeyArn, ""]
+        Environment: !Ref Environment
+        CiSuffix: !Ref CiSuffix
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: GetOrderLogGroup
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  GetProductLambdaCWLogGroup:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested CloudWatch Logs CloudFormation template to create the /aws/lambda/<project>-get-product-<env>-<region> log group with 14-day retention and optional KMS encryption"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create CloudWatch Logs log groups"
+          - "If KmsKeyArn is set, the key policy must allow the CloudWatch Logs service principal to use it"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-cloudwatch-log-group/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        CustomLogGroupName: !If
+          - HasCiSuffix
+          - !Sub "/aws/lambda/${ProjectName}-${GetProductFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+          - !Sub "/aws/lambda/${ProjectName}-${GetProductFunctionBaseName}-${Environment}-${AWS::Region}"
+        RetentionInDays: 14
+        KmsKeyIdOrAlias: !If [HasKmsKeyArn, !Ref KmsKeyArn, ""]
+        Environment: !Ref Environment
+        CiSuffix: !Ref CiSuffix
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: GetProductLogGroup
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  SearchProductsLambdaCWLogGroup:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested CloudWatch Logs CloudFormation template to create the /aws/lambda/<project>-search-products-<env>-<region> log group with 14-day retention and optional KMS encryption"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create CloudWatch Logs log groups"
+          - "If KmsKeyArn is set, the key policy must allow the CloudWatch Logs service principal to use it"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-cloudwatch-log-group/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        CustomLogGroupName: !If
+          - HasCiSuffix
+          - !Sub "/aws/lambda/${ProjectName}-${SearchProductsFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+          - !Sub "/aws/lambda/${ProjectName}-${SearchProductsFunctionBaseName}-${Environment}-${AWS::Region}"
+        RetentionInDays: 14
+        KmsKeyIdOrAlias: !If [HasKmsKeyArn, !Ref KmsKeyArn, ""]
+        Environment: !Ref Environment
+        CiSuffix: !Ref CiSuffix
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: SearchProductsLogGroup
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  SubmitRequestLambdaCWLogGroup:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested CloudWatch Logs CloudFormation template to create the /aws/lambda/<project>-submit-request-<env>-<region> log group with 14-day retention and optional KMS encryption"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create CloudWatch Logs log groups"
+          - "If KmsKeyArn is set, the key policy must allow the CloudWatch Logs service principal to use it"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-cloudwatch-log-group/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        CustomLogGroupName: !If
+          - HasCiSuffix
+          - !Sub "/aws/lambda/${ProjectName}-${SubmitRequestFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+          - !Sub "/aws/lambda/${ProjectName}-${SubmitRequestFunctionBaseName}-${Environment}-${AWS::Region}"
+        RetentionInDays: 14
+        KmsKeyIdOrAlias: !If [HasKmsKeyArn, !Ref KmsKeyArn, ""]
+        Environment: !Ref Environment
+        CiSuffix: !Ref CiSuffix
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: SubmitRequestLogGroup
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  ListOrdersLambdaIAMRole:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested IAM role CloudFormation template to create the list-orders Lambda execution role, trusted by lambda.amazonaws.com, with CloudWatch Logs write access to its log group, read/write access to the orders table, and KMS access when a KmsKeyArn is set"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create IAM roles and inline policies"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-iam-roles-policies/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        RoleName: !Ref ListOrdersFunctionBaseName
+        Environment: !Ref Environment
+        AssumeRolePrincipal: "lambda.amazonaws.com"
+        EnableLambdaBasicExecutionPolicy: "true"
+        EnableKMSPolicy: !If [HasKmsKeyArn, "true", "false"]
+        KMSKeyArn: !Ref KmsKeyArn
+        EnableDynamoDBReadOnlyPolicy: "true"
+        DynamoDBTableArn: !GetAtt OrdersDynamoDBTable.Outputs.TableArn
+        LambdaBasicExecutionLogGroupArn: !If
+          - HasCiSuffix
+          - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${ListOrdersFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}:*"
+          - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${ListOrdersFunctionBaseName}-${Environment}-${AWS::Region}:*"
+        CiSuffix: !Ref CiSuffix
+
+  GetOrderLambdaIAMRole:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested IAM role CloudFormation template to create the get-order Lambda execution role, trusted by lambda.amazonaws.com, with CloudWatch Logs write access to its log group, read/write access to the orders table, and KMS access when a KmsKeyArn is set"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create IAM roles and inline policies"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-iam-roles-policies/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        RoleName: !Ref GetOrderFunctionBaseName
+        Environment: !Ref Environment
+        AssumeRolePrincipal: "lambda.amazonaws.com"
+        EnableLambdaBasicExecutionPolicy: "true"
+        EnableKMSPolicy: !If [HasKmsKeyArn, "true", "false"]
+        KMSKeyArn: !Ref KmsKeyArn
+        EnableDynamoDBReadOnlyPolicy: "true"
+        DynamoDBTableArn: !GetAtt OrdersDynamoDBTable.Outputs.TableArn
+        LambdaBasicExecutionLogGroupArn: !If
+          - HasCiSuffix
+          - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${GetOrderFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}:*"
+          - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${GetOrderFunctionBaseName}-${Environment}-${AWS::Region}:*"
+        CiSuffix: !Ref CiSuffix
+
+  GetProductLambdaIAMRole:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested IAM role CloudFormation template to create the get-product Lambda execution role, trusted by lambda.amazonaws.com, with CloudWatch Logs write access to its log group, read/write access to the products table, and KMS access when a KmsKeyArn is set"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create IAM roles and inline policies"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-iam-roles-policies/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        RoleName: !Ref GetProductFunctionBaseName
+        Environment: !Ref Environment
+        AssumeRolePrincipal: "lambda.amazonaws.com"
+        EnableLambdaBasicExecutionPolicy: "true"
+        EnableKMSPolicy: !If [HasKmsKeyArn, "true", "false"]
+        KMSKeyArn: !Ref KmsKeyArn
+        EnableDynamoDBReadOnlyPolicy: "true"
+        DynamoDBTableArn: !GetAtt ProductsDynamoDBTable.Outputs.TableArn
+        LambdaBasicExecutionLogGroupArn: !If
+          - HasCiSuffix
+          - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${GetProductFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}:*"
+          - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${GetProductFunctionBaseName}-${Environment}-${AWS::Region}:*"
+        CiSuffix: !Ref CiSuffix
+
+  SearchProductsLambdaIAMRole:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested IAM role CloudFormation template to create the search-products Lambda execution role, trusted by lambda.amazonaws.com, with CloudWatch Logs write access to its log group, read/write access to the products table, and KMS access when a KmsKeyArn is set"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create IAM roles and inline policies"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-iam-roles-policies/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        RoleName: !Ref SearchProductsFunctionBaseName
+        Environment: !Ref Environment
+        AssumeRolePrincipal: "lambda.amazonaws.com"
+        EnableLambdaBasicExecutionPolicy: "true"
+        EnableKMSPolicy: !If [HasKmsKeyArn, "true", "false"]
+        KMSKeyArn: !Ref KmsKeyArn
+        EnableDynamoDBReadOnlyPolicy: "true"
+        DynamoDBTableArn: !GetAtt ProductsDynamoDBTable.Outputs.TableArn
+        LambdaBasicExecutionLogGroupArn: !If
+          - HasCiSuffix
+          - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${SearchProductsFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}:*"
+          - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${SearchProductsFunctionBaseName}-${Environment}-${AWS::Region}:*"
+        CiSuffix: !Ref CiSuffix
+
+  SubmitRequestLambdaIAMRole:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested IAM role CloudFormation template to create the submit-request Lambda execution role, trusted by lambda.amazonaws.com, with CloudWatch Logs write access to its log group, read/write access to the orders table, and KMS access when a KmsKeyArn is set"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create IAM roles and inline policies"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-iam-roles-policies/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        RoleName: !Ref SubmitRequestFunctionBaseName
+        Environment: !Ref Environment
+        AssumeRolePrincipal: "lambda.amazonaws.com"
+        EnableLambdaBasicExecutionPolicy: "true"
+        EnableKMSPolicy: !If [HasKmsKeyArn, "true", "false"]
+        KMSKeyArn: !Ref KmsKeyArn
+        EnableDynamoDBReadWritePolicy: "true"
+        DynamoDBTableArn: !GetAtt OrdersDynamoDBTable.Outputs.TableArn
+        LambdaBasicExecutionLogGroupArn: !If
+          - HasCiSuffix
+          - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${SubmitRequestFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}:*"
+          - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${SubmitRequestFunctionBaseName}-${Environment}-${AWS::Region}:*"
+        CiSuffix: !Ref CiSuffix
 
 Outputs:
-  NestedStackId:
-    Description: "ID of the nested stack"
-    Value: !Ref S3BucketNestedStack
 
-  S3BucketName:
-    Description: "Name of the S3 bucket created by the nested stack"
-    Value: !GetAtt S3BucketNestedStack.Outputs.S3BucketName
+  DynamoDBTableName:
+    Description: "Name of the DynamoDB table created by the nested stack"
+    Value: !GetAtt OrdersDynamoDBTable.Outputs.TableName
 
-  S3BucketArn:
-    Description: "ARN of the S3 bucket created by the nested stack"
-    Value: !GetAtt S3BucketNestedStack.Outputs.S3BucketArn
+  DynamoDBTableArn:
+    Description: "ARN of the DynamoDB table created by the nested stack"
+    Value: !GetAtt OrdersDynamoDBTable.Outputs.TableArn
+
+  ProductsDynamoDBTableName:
+    Description: "Name of the Products DynamoDB table created by the nested stack"
+    Value: !GetAtt ProductsDynamoDBTable.Outputs.TableName
+
+  ProductsDynamoDBTableArn:
+    Description: "ARN of the Products DynamoDB table created by the nested stack"
+    Value: !GetAtt ProductsDynamoDBTable.Outputs.TableArn

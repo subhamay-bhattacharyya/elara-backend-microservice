@@ -2,10 +2,11 @@
 
 ## Completed ✅
 
-- [x] AWS
-- [x] Amazon
+- [x] None
 
 ## Pending 🏗️
 
-- [ ] Amazon
-- [ ] AWS
+- [ ] DynamoDB Table
+- [ ] Five Lambda Functions
+- [ ] API Gateway
+- [ ] Parameter Store

@@ -1,7 +1,7 @@
 {
   "Environment": "devl",
   "KmsKey": "SB-KMS",
-  "ProjectName": "cfn-nstd",
+  "ProjectName": "elara",
   "BucketBaseName": "s3-nested-stack",
   "CiSuffix": ""
 }
