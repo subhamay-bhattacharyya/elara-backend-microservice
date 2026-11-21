@@ -29,6 +29,10 @@ Metadata:
           - GetProductFunctionBaseName
           - SearchProductsFunctionBaseName
           - SubmitRequestFunctionBaseName
+      - Label:
+          default: "Lambda Runtime"
+        Parameters:
+          - LambdaRuntime
     ParameterLabels:
       NestedStacksS3BucketName:
         default: "S3 Bucket Name"
@@ -130,6 +134,13 @@ Parameters:
     MaxLength: 40
     AllowedPattern: "^[a-z0-9-]+$"
     ConstraintDescription: "Function base name must be lowercase letters, numbers, and hyphens only"
+
+  LambdaRuntime:
+    Type: String
+    Default: "python3.12"
+    Description: "Runtime used by all five Lambda functions"
+    AllowedPattern: "^(python|nodejs|java|dotnet|ruby|provided)[a-z0-9.]+$"
+    ConstraintDescription: "Runtime must be a valid Lambda runtime identifier, for example python3.12 or nodejs20.x"
 
 Conditions:
   HasKmsKey: !Not [!Equals [!Ref KmsKey, ""]]
@@ -390,7 +401,7 @@ Resources:
     UpdateReplacePolicy: Delete
     Metadata:
       com.aws.cloudformation.Context:
-        why: "Invokes the nested IAM role CloudFormation template to create the list-orders Lambda execution role, trusted by lambda.amazonaws.com, with CloudWatch Logs write access to its log group, read/write access to the orders table, and KMS access when a KmsKeyArn is set"
+        why: "Invokes the nested IAM role CloudFormation template to create the list-orders Lambda execution role, trusted by lambda.amazonaws.com, with CloudWatch Logs write access to its log group, read-only access to the orders table, and KMS access when a KmsKeyArn is set"
         must:
           - "Nested template must be accessible at the specified S3 location"
           - "IAM principal must have s3:GetObject permission on the template S3 bucket"
@@ -419,7 +430,7 @@ Resources:
     UpdateReplacePolicy: Delete
     Metadata:
       com.aws.cloudformation.Context:
-        why: "Invokes the nested IAM role CloudFormation template to create the get-order Lambda execution role, trusted by lambda.amazonaws.com, with CloudWatch Logs write access to its log group, read/write access to the orders table, and KMS access when a KmsKeyArn is set"
+        why: "Invokes the nested IAM role CloudFormation template to create the get-order Lambda execution role, trusted by lambda.amazonaws.com, with CloudWatch Logs write access to its log group, read-only access to the orders table, and KMS access when a KmsKeyArn is set"
         must:
           - "Nested template must be accessible at the specified S3 location"
           - "IAM principal must have s3:GetObject permission on the template S3 bucket"
@@ -448,7 +459,7 @@ Resources:
     UpdateReplacePolicy: Delete
     Metadata:
       com.aws.cloudformation.Context:
-        why: "Invokes the nested IAM role CloudFormation template to create the get-product Lambda execution role, trusted by lambda.amazonaws.com, with CloudWatch Logs write access to its log group, read/write access to the products table, and KMS access when a KmsKeyArn is set"
+        why: "Invokes the nested IAM role CloudFormation template to create the get-product Lambda execution role, trusted by lambda.amazonaws.com, with CloudWatch Logs write access to its log group, read-only access to the products table, and KMS access when a KmsKeyArn is set"
         must:
           - "Nested template must be accessible at the specified S3 location"
           - "IAM principal must have s3:GetObject permission on the template S3 bucket"
@@ -477,7 +488,7 @@ Resources:
     UpdateReplacePolicy: Delete
     Metadata:
       com.aws.cloudformation.Context:
-        why: "Invokes the nested IAM role CloudFormation template to create the search-products Lambda execution role, trusted by lambda.amazonaws.com, with CloudWatch Logs write access to its log group, read/write access to the products table, and KMS access when a KmsKeyArn is set"
+        why: "Invokes the nested IAM role CloudFormation template to create the search-products Lambda execution role, trusted by lambda.amazonaws.com, with CloudWatch Logs write access to its log group, read-only access to the products table, and KMS access when a KmsKeyArn is set"
         must:
           - "Nested template must be accessible at the specified S3 location"
           - "IAM principal must have s3:GetObject permission on the template S3 bucket"
@@ -529,6 +540,614 @@ Resources:
           - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${SubmitRequestFunctionBaseName}-${Environment}-${AWS::Region}:*"
         CiSuffix: !Ref CiSuffix
 
+  ListOrdersLambdaFunction:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    DependsOn:
+      - ListOrdersLambdaCWLogGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested Lambda function CloudFormation template to create the list-orders function using its IAM execution role and log group, with the orders table name passed as DYNAMODB_TABLE_NAME"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create Lambda functions"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-lambda-function/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        LambdaFunctionBaseName: !Ref ListOrdersFunctionBaseName
+        Environment: !Ref Environment
+        Runtime: !Ref LambdaRuntime
+        Handler: "lambda.handler"
+        MemorySize: "256"
+        Timeout: "60"
+        IAMRoleArn: !GetAtt ListOrdersLambdaIAMRole.Outputs.RoleArn
+        LambdaLogGroup: !If
+          - HasCiSuffix
+          - !Sub "/aws/lambda/${ProjectName}-${ListOrdersFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+          - !Sub "/aws/lambda/${ProjectName}-${ListOrdersFunctionBaseName}-${Environment}-${AWS::Region}"
+        CiSuffix: !Ref CiSuffix
+        CreateSqsQueue: "false"
+        EnvironmentNameValue: !Ref Environment
+        CustomNameValue: !Sub |
+          {
+            "DYNAMODB_TABLE_NAME": "${OrdersDynamoDBTable.Outputs.TableName}"
+          }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: ListOrdersFunction
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 10
+
+  GetOrderLambdaFunction:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    DependsOn:
+      - GetOrderLambdaCWLogGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested Lambda function CloudFormation template to create the get-order function using its IAM execution role and log group, with the orders table name passed as DYNAMODB_TABLE_NAME"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create Lambda functions"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-lambda-function/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        LambdaFunctionBaseName: !Ref GetOrderFunctionBaseName
+        Environment: !Ref Environment
+        Runtime: !Ref LambdaRuntime
+        Handler: "lambda.handler"
+        MemorySize: "256"
+        Timeout: "60"
+        IAMRoleArn: !GetAtt GetOrderLambdaIAMRole.Outputs.RoleArn
+        LambdaLogGroup: !If
+          - HasCiSuffix
+          - !Sub "/aws/lambda/${ProjectName}-${GetOrderFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+          - !Sub "/aws/lambda/${ProjectName}-${GetOrderFunctionBaseName}-${Environment}-${AWS::Region}"
+        CiSuffix: !Ref CiSuffix
+        EnvironmentNameValue: !Ref Environment
+        CustomNameValue: !Sub |
+          {
+            "DYNAMODB_TABLE_NAME": "${OrdersDynamoDBTable.Outputs.TableName}"
+          }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: GetOrderFunction
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 10
+
+  GetProductLambdaFunction:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    DependsOn:
+      - GetProductLambdaCWLogGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested Lambda function CloudFormation template to create the get-product function using its IAM execution role and log group, with the products table name passed as DYNAMODB_TABLE_NAME"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create Lambda functions"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-lambda-function/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        LambdaFunctionBaseName: !Ref GetProductFunctionBaseName
+        Environment: !Ref Environment
+        Runtime: !Ref LambdaRuntime
+        Handler: "lambda.handler"
+        MemorySize: "256"
+        Timeout: "60"
+        IAMRoleArn: !GetAtt GetProductLambdaIAMRole.Outputs.RoleArn
+        LambdaLogGroup: !If
+          - HasCiSuffix
+          - !Sub "/aws/lambda/${ProjectName}-${GetProductFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+          - !Sub "/aws/lambda/${ProjectName}-${GetProductFunctionBaseName}-${Environment}-${AWS::Region}"
+        CiSuffix: !Ref CiSuffix
+        EnvironmentNameValue: !Ref Environment
+        CustomNameValue: !Sub |
+          {
+            "DYNAMODB_TABLE_NAME": "${ProductsDynamoDBTable.Outputs.TableName}"
+          }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: GetProductFunction
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 10
+
+  SearchProductsLambdaFunction:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    DependsOn:
+      - SearchProductsLambdaCWLogGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested Lambda function CloudFormation template to create the search-products function using its IAM execution role and log group, with the products table name passed as DYNAMODB_TABLE_NAME"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create Lambda functions"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-lambda-function/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        LambdaFunctionBaseName: !Ref SearchProductsFunctionBaseName
+        Environment: !Ref Environment
+        Runtime: !Ref LambdaRuntime
+        Handler: "lambda.handler"
+        MemorySize: "256"
+        Timeout: "60"
+        IAMRoleArn: !GetAtt SearchProductsLambdaIAMRole.Outputs.RoleArn
+        LambdaLogGroup: !If
+          - HasCiSuffix
+          - !Sub "/aws/lambda/${ProjectName}-${SearchProductsFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+          - !Sub "/aws/lambda/${ProjectName}-${SearchProductsFunctionBaseName}-${Environment}-${AWS::Region}"
+        CiSuffix: !Ref CiSuffix
+        EnvironmentNameValue: !Ref Environment
+        CustomNameValue: !Sub |
+          {
+            "DYNAMODB_TABLE_NAME": "${ProductsDynamoDBTable.Outputs.TableName}"
+          }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: SearchProductsFunction
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 10
+
+  SubmitRequestLambdaFunction:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    DependsOn:
+      - SubmitRequestLambdaCWLogGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested Lambda function CloudFormation template to create the submit-request function using its IAM execution role and log group, with the orders table name passed as DYNAMODB_TABLE_NAME"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create Lambda functions"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-lambda-function/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        LambdaFunctionBaseName: !Ref SubmitRequestFunctionBaseName
+        Environment: !Ref Environment
+        Runtime: !Ref LambdaRuntime
+        Handler: "lambda.handler"
+        MemorySize: "256"
+        Timeout: "60"
+        IAMRoleArn: !GetAtt SubmitRequestLambdaIAMRole.Outputs.RoleArn
+        LambdaLogGroup: !If
+          - HasCiSuffix
+          - !Sub "/aws/lambda/${ProjectName}-${SubmitRequestFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+          - !Sub "/aws/lambda/${ProjectName}-${SubmitRequestFunctionBaseName}-${Environment}-${AWS::Region}"
+        CiSuffix: !Ref CiSuffix
+        EnvironmentNameValue: !Ref Environment
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: SubmitRequestFunction
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 10
+
+  ApiGatewayRestApi:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested API Gateway REST API CloudFormation template to create the Shop Smart REST API entry point (REGIONAL endpoint) for the Lambda functions; methods and deployment are not defined by this stack"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create API Gateway REST APIs"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-api-gateway-rest-api/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        ApiBaseName: "commerce-api"
+        ApiDescription: "Commerce REST API for the elara backend microservice"
+        EndpointConfigurationType: "REGIONAL"
+        Environment: !Ref Environment
+        CiSuffix: !Ref CiSuffix
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: ApiGateway
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  OrdersApiResource:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested API Gateway resource CloudFormation template to add the /orders path segment under the root resource of the existing Commerce REST API"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create API Gateway resources"
+          - "CiSuffix must stay empty so the nested template attaches to the existing REST API instead of creating a new one"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-api-gateway-resource/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        PathPart: "orders"
+        RestApiId: !GetAtt ApiGatewayRestApi.Outputs.RestApiId
+        ParentId: !GetAtt ApiGatewayRestApi.Outputs.RestApiRootResourceId
+        Environment: !Ref Environment
+        CiSuffix: ""
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: OrdersApiResource
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  ProductsApiResource:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested API Gateway resource CloudFormation template to add the /products path segment under the root resource of the existing Commerce REST API"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create API Gateway resources"
+          - "CiSuffix must stay empty so the nested template attaches to the existing REST API instead of creating a new one"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-api-gateway-resource/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        PathPart: "products"
+        RestApiId: !GetAtt ApiGatewayRestApi.Outputs.RestApiId
+        ParentId: !GetAtt ApiGatewayRestApi.Outputs.RestApiRootResourceId
+        Environment: !Ref Environment
+        CiSuffix: ""
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: ProductsApiResource
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  RequestsApiResource:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested API Gateway resource CloudFormation template to add the /requests path segment under the root resource of the existing Commerce REST API"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create API Gateway resources"
+          - "CiSuffix must stay empty so the nested template attaches to the existing REST API instead of creating a new one"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-api-gateway-resource/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        PathPart: "requests"
+        RestApiId: !GetAtt ApiGatewayRestApi.Outputs.RestApiId
+        ParentId: !GetAtt ApiGatewayRestApi.Outputs.RestApiRootResourceId
+        Environment: !Ref Environment
+        CiSuffix: ""
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: RequestsApiResource
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  OrdersOrderIdApiResource:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested API Gateway resource CloudFormation template to add the /orders/{orderId} path parameter under the /orders resource of the existing Commerce REST API"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create API Gateway resources"
+          - "CiSuffix must stay empty so the nested template attaches to the existing REST API instead of creating a new one"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-api-gateway-resource/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        PathPart: "{orderId}"
+        RestApiId: !GetAtt ApiGatewayRestApi.Outputs.RestApiId
+        ParentId: !GetAtt OrdersApiResource.Outputs.RestApiResourceId
+        Environment: !Ref Environment
+        CiSuffix: ""
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: OrdersOrderIdApiResource
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  ProductsProductIdApiResource:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested API Gateway resource CloudFormation template to add the /products/{productId} path parameter under the /products resource of the existing Commerce REST API"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create API Gateway resources"
+          - "CiSuffix must stay empty so the nested template attaches to the existing REST API instead of creating a new one"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-api-gateway-resource/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        PathPart: "{productId}"
+        RestApiId: !GetAtt ApiGatewayRestApi.Outputs.RestApiId
+        ParentId: !GetAtt ProductsApiResource.Outputs.RestApiResourceId
+        Environment: !Ref Environment
+        CiSuffix: ""
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: ProductsProductIdApiResource
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  ListOrdersMethod:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested API Gateway method CloudFormation template to create GET /orders (AWS_IAM, AWS_PROXY) that invokes the list-orders Lambda function"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create API Gateway methods"
+          - "The list-orders Lambda function is granted invoke permission for this route by the method template"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-api-gateway-method/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        PathPart: "orders"
+        RestApiId: !GetAtt ApiGatewayRestApi.Outputs.RestApiId
+        ParentId: !GetAtt ApiGatewayRestApi.Outputs.RestApiRootResourceId
+        ExistingResourceId: !GetAtt OrdersApiResource.Outputs.RestApiResourceId
+        RoutePath: "orders"
+        HttpMethod: "GET"
+        AuthorizationType: "AWS_IAM"
+        LambdaFunctionArn: !GetAtt ListOrdersLambdaFunction.Outputs.FunctionArn
+        IntegrationType: "AWS_PROXY"
+        IntegrationHttpMethod: "POST"
+        Environment: !Ref Environment
+        CiSuffix: ""
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: ListOrdersMethod
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  GetOrderMethod:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested API Gateway method CloudFormation template to create GET /orders/{orderId} (AWS_IAM, AWS_PROXY) that invokes the get-order Lambda function"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create API Gateway methods"
+          - "The get-order Lambda function is granted invoke permission for this route by the method template"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-api-gateway-method/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        PathPart: "{orderId}"
+        RestApiId: !GetAtt ApiGatewayRestApi.Outputs.RestApiId
+        ParentId: !GetAtt OrdersApiResource.Outputs.RestApiResourceId
+        ExistingResourceId: !GetAtt OrdersOrderIdApiResource.Outputs.RestApiResourceId
+        RoutePath: "orders/{orderId}"
+        HttpMethod: "GET"
+        AuthorizationType: "AWS_IAM"
+        LambdaFunctionArn: !GetAtt GetOrderLambdaFunction.Outputs.FunctionArn
+        IntegrationType: "AWS_PROXY"
+        IntegrationHttpMethod: "POST"
+        Environment: !Ref Environment
+        CiSuffix: ""
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: GetOrderMethod
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  SearchProductsMethod:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested API Gateway method CloudFormation template to create GET /products (AWS_IAM, AWS_PROXY) that invokes the search-products Lambda function"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create API Gateway methods"
+          - "The search-products Lambda function is granted invoke permission for this route by the method template"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-api-gateway-method/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        PathPart: "products"
+        RestApiId: !GetAtt ApiGatewayRestApi.Outputs.RestApiId
+        ParentId: !GetAtt ApiGatewayRestApi.Outputs.RestApiRootResourceId
+        ExistingResourceId: !GetAtt ProductsApiResource.Outputs.RestApiResourceId
+        RoutePath: "products"
+        HttpMethod: "GET"
+        AuthorizationType: "AWS_IAM"
+        LambdaFunctionArn: !GetAtt SearchProductsLambdaFunction.Outputs.FunctionArn
+        IntegrationType: "AWS_PROXY"
+        IntegrationHttpMethod: "POST"
+        Environment: !Ref Environment
+        CiSuffix: ""
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: SearchProductsMethod
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  GetProductMethod:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested API Gateway method CloudFormation template to create GET /products/{productId} (AWS_IAM, AWS_PROXY) that invokes the get-product Lambda function"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create API Gateway methods"
+          - "The get-product Lambda function is granted invoke permission for this route by the method template"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-api-gateway-method/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        PathPart: "{productId}"
+        RestApiId: !GetAtt ApiGatewayRestApi.Outputs.RestApiId
+        ParentId: !GetAtt ProductsApiResource.Outputs.RestApiResourceId
+        ExistingResourceId: !GetAtt ProductsProductIdApiResource.Outputs.RestApiResourceId
+        RoutePath: "products/{productId}"
+        HttpMethod: "GET"
+        AuthorizationType: "AWS_IAM"
+        LambdaFunctionArn: !GetAtt GetProductLambdaFunction.Outputs.FunctionArn
+        IntegrationType: "AWS_PROXY"
+        IntegrationHttpMethod: "POST"
+        Environment: !Ref Environment
+        CiSuffix: ""
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: GetProductMethod
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
+  SubmitRequestMethod:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Invokes the nested API Gateway method CloudFormation template to create POST /requests (AWS_IAM, AWS_PROXY) that invokes the submit-request Lambda function"
+        must:
+          - "Nested template must be accessible at the specified S3 location"
+          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
+          - "CloudFormation service must have permission to create API Gateway methods"
+          - "The submit-request Lambda function is granted invoke permission for this route by the method template"
+    Properties:
+      TemplateURL: !Sub "https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-api-gateway-method/template.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        PathPart: "requests"
+        RestApiId: !GetAtt ApiGatewayRestApi.Outputs.RestApiId
+        ParentId: !GetAtt ApiGatewayRestApi.Outputs.RestApiRootResourceId
+        ExistingResourceId: !GetAtt RequestsApiResource.Outputs.RestApiResourceId
+        RoutePath: "requests"
+        HttpMethod: "POST"
+        AuthorizationType: "AWS_IAM"
+        LambdaFunctionArn: !GetAtt SubmitRequestLambdaFunction.Outputs.FunctionArn
+        IntegrationType: "AWS_PROXY"
+        IntegrationHttpMethod: "POST"
+        Environment: !Ref Environment
+        CiSuffix: ""
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Component
+          Value: SubmitRequestMethod
+        - Key: ManagedBy
+          Value: RootStack
+      TimeoutInMinutes: 5
+
 Outputs:
 
   DynamoDBTableName:
@@ -546,3 +1165,104 @@ Outputs:
   ProductsDynamoDBTableArn:
     Description: "ARN of the Products DynamoDB table created by the nested stack"
     Value: !GetAtt ProductsDynamoDBTable.Outputs.TableArn
+
+  ListOrdersLogGroupArn:
+    Description: "ARN of the list-orders Lambda CloudWatch log group"
+    Value: !If
+      - HasCiSuffix
+      - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${ListOrdersFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+      - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${ListOrdersFunctionBaseName}-${Environment}-${AWS::Region}"
+
+  ListOrdersIAMRoleArn:
+    Description: "ARN of the list-orders Lambda execution role"
+    Value: !GetAtt ListOrdersLambdaIAMRole.Outputs.RoleArn
+
+  ListOrdersLambdaFunctionArn:
+    Description: "ARN of the list-orders Lambda function"
+    Value: !GetAtt ListOrdersLambdaFunction.Outputs.FunctionArn
+
+  GetOrderLogGroupArn:
+    Description: "ARN of the get-order Lambda CloudWatch log group"
+    Value: !If
+      - HasCiSuffix
+      - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${GetOrderFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+      - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${GetOrderFunctionBaseName}-${Environment}-${AWS::Region}"
+
+  GetOrderIAMRoleArn:
+    Description: "ARN of the get-order Lambda execution role"
+    Value: !GetAtt GetOrderLambdaIAMRole.Outputs.RoleArn
+
+  GetOrderLambdaFunctionArn:
+    Description: "ARN of the get-order Lambda function"
+    Value: !GetAtt GetOrderLambdaFunction.Outputs.FunctionArn
+
+  GetProductLogGroupArn:
+    Description: "ARN of the get-product Lambda CloudWatch log group"
+    Value: !If
+      - HasCiSuffix
+      - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${GetProductFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+      - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${GetProductFunctionBaseName}-${Environment}-${AWS::Region}"
+
+  GetProductIAMRoleArn:
+    Description: "ARN of the get-product Lambda execution role"
+    Value: !GetAtt GetProductLambdaIAMRole.Outputs.RoleArn
+
+  GetProductLambdaFunctionArn:
+    Description: "ARN of the get-product Lambda function"
+    Value: !GetAtt GetProductLambdaFunction.Outputs.FunctionArn
+
+  SearchProductsLogGroupArn:
+    Description: "ARN of the search-products Lambda CloudWatch log group"
+    Value: !If
+      - HasCiSuffix
+      - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${SearchProductsFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+      - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${SearchProductsFunctionBaseName}-${Environment}-${AWS::Region}"
+
+  SearchProductsIAMRoleArn:
+    Description: "ARN of the search-products Lambda execution role"
+    Value: !GetAtt SearchProductsLambdaIAMRole.Outputs.RoleArn
+
+  SearchProductsLambdaFunctionArn:
+    Description: "ARN of the search-products Lambda function"
+    Value: !GetAtt SearchProductsLambdaFunction.Outputs.FunctionArn
+
+  SubmitRequestLogGroupArn:
+    Description: "ARN of the submit-request Lambda CloudWatch log group"
+    Value: !If
+      - HasCiSuffix
+      - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${SubmitRequestFunctionBaseName}-${Environment}-${AWS::Region}-${CiSuffix}"
+      - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${SubmitRequestFunctionBaseName}-${Environment}-${AWS::Region}"
+
+  SubmitRequestIAMRoleArn:
+    Description: "ARN of the submit-request Lambda execution role"
+    Value: !GetAtt SubmitRequestLambdaIAMRole.Outputs.RoleArn
+
+  SubmitRequestLambdaFunctionArn:
+    Description: "ARN of the submit-request Lambda function"
+    Value: !GetAtt SubmitRequestLambdaFunction.Outputs.FunctionArn
+
+  ApiGatewayRestApiArn:
+    Description: "ARN of the Commerce API Gateway REST API"
+    Value: !Sub
+      - "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${RestApiId}"
+      - RestApiId: !GetAtt ApiGatewayRestApi.Outputs.RestApiId
+
+  OrdersApiResourceId:
+    Description: "ID of the /orders API Gateway resource"
+    Value: !GetAtt OrdersApiResource.Outputs.RestApiResourceId
+
+  OrdersOrderIdApiResourceId:
+    Description: "ID of the /orders/{orderId} API Gateway resource"
+    Value: !GetAtt OrdersOrderIdApiResource.Outputs.RestApiResourceId
+
+  ProductsApiResourceId:
+    Description: "ID of the /products API Gateway resource"
+    Value: !GetAtt ProductsApiResource.Outputs.RestApiResourceId
+
+  ProductsProductIdApiResourceId:
+    Description: "ID of the /products/{productId} API Gateway resource"
+    Value: !GetAtt ProductsProductIdApiResource.Outputs.RestApiResourceId
+
+  RequestsApiResourceId:
+    Description: "ID of the /requests API Gateway resource"
+    Value: !GetAtt RequestsApiResource.Outputs.RestApiResourceId
